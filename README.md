@@ -4,6 +4,16 @@ This is a stripped down version of sfxr without any win32 or SDL dependencies.
 
 It receives a parameters file (*.sfs) exported from sfxr and generates an fx sound with the given parameters and saves it as WAV file.
 
+## Build
+
+Just run "make".
+
+## Run
+
+```
+./cfxr <FX_DEFINITION_FILE>
+```
+
 TODO:
 1. Read parameters from the command line 
    - only category: generates a sound given the category (coin, jump, hit, etc)
