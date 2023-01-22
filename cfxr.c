@@ -52,7 +52,6 @@ float master_vol=0.05f;
 
 float sound_vol=0.5f;
 
-
 bool playing_sample=false;
 int phase;
 double fperiod;
