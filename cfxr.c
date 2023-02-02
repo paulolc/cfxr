@@ -5,16 +5,28 @@
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
+#include <libgen.h>
 
 #define rnd(n) (rand()%(n+1))
 
 #define PI 3.14159265f
+#define EXECNAME "cfxr"
+#define DEFAULT_SETTINGS_FILENAME "cfxr.sts"
+#define DEFAULT_OUTPUT_FILENAME "cfxr.wav"
+
 
 float frnd(float range)
 {
 	return (float)rnd(10000)/10000*range;
 }
 
+
+bool settings_loaded = false;
+
+char *settings_filename;
+
+int version;
 int wave_type;
 
 float p_base_freq;
@@ -97,6 +109,8 @@ int wav_freq=44100;
 int file_sampleswritten;
 float filesample=0.0f;
 int fileacc=0;
+bool mute_stream;
+
 
 void ResetParams()
 {
@@ -134,13 +148,107 @@ void ResetParams()
 	p_arp_mod=0.0f;
 }
 
+void PrintSettings()
+{
+	printf(
+		"\n"
+		"Settings:\n"
+		"\n"
+		"            version: %d\n"
+		"          wave_type: %d\n"
+		"          sound_vol: %f\n"
+		"     base frequency: %f\n"
+		"\n"
+		"                - frequency -\n"
+		"\n"
+		"              limit: %f\n"
+		"               ramp: %f\n"
+		"              dramp: %f\n"
+		"\n"
+		"               - duty cycle -\n"
+		"\n"
+		"         percentage: %f\n"
+		"               ramp: %f\n"
+		"\n"
+		"                  - vibrato - \n"
+		"\n"
+		"           strength: %f\n"
+		"              speed: %f\n"
+		"              delay: %f\n"
+		"\n"
+		"                 - envelope -\n"
+		"\n"
+	    "             attack: %f\n"
+		"            sustain: %f\n"
+		"              decay: %f\n"
+		"              punch: %f\n"
+		"\n"
+		"          filter on: %s\n"
+		"\n"
+		"          - low pass filter -\n"
+		"\n"
+		"          resonance: %f\n"
+		"          frequency: %f\n"
+		"               ramp: %f\n"
+		"\n"
+		"         - high pass filter -\n"
+		"\n"
+		"          frequency: %f\n"
+		"               ramp: %f\n"
+		"\n"
+		"                  - phase -\n"
+		"\n"
+		"             offset: %f\n"
+		"               ramp: %f\n"
+		"       repeat speed: %f\n"
+		"\n"
+		"             - arpeggiator -\n"
+		"\n"
+		"              speed: %f\n"
+		"                mod: %f\n"
+		"\n"
+		"            MAX_INT: %d\n\n"
+		, 
+		version,
+		wave_type,
+		sound_vol,
+		p_base_freq,
+		p_freq_limit,
+		p_freq_ramp,
+		p_freq_dramp,
+		p_duty,
+		p_duty_ramp,
+		p_vib_strength,
+		p_vib_speed,
+		p_vib_delay,
+		p_env_attack,
+		p_env_sustain,
+		p_env_decay,
+		p_env_punch,
+		filter_on ? "true" : "false",
+		p_lpf_resonance,
+		p_lpf_freq,
+		p_lpf_ramp,
+		p_hpf_freq,
+		p_hpf_ramp,
+		p_pha_offset,
+		p_pha_ramp,
+		p_repeat_speed,
+		p_arp_speed,
+		p_arp_mod,
+		0x7FFFFFFF
+	);
+}
+
 bool LoadSettings(char* filename)
 {
 	FILE* file=fopen(filename, "rb");
-	if(!file)
-		return false;
-
-	int version=0;
+	if(!file){
+		printf("\nERROR: while loading parameters file %s\n\n", filename );
+		exit(1);
+	}
+	
+	version=0;
 	fread(&version, 1, sizeof(int), file);
 	if(version!=100 && version!=101 && version!=102)
 		return false;
@@ -187,6 +295,7 @@ bool LoadSettings(char* filename)
 	}
 
 	fclose(file);
+	printf("\nSettings loaded from %s\n",filename);
 	return true;
 }
 
@@ -381,7 +490,7 @@ void SynthSample(int length, float* buffer, FILE* file)
 			phase++;
 			if(phase>=period)
 			{
-//				phase=0;
+			//phase=0;
 				phase%=period;
 				if(wave_type==3)
 					for(int i=0;i<32;i++)
@@ -474,8 +583,6 @@ void SynthSample(int length, float* buffer, FILE* file)
 	}
 }
 
-bool mute_stream;
-
 bool ExportWAV(char* filename)
 {
 	FILE* foutput=fopen(filename, "wb");
@@ -491,18 +598,25 @@ bool ExportWAV(char* filename)
 	fwrite("WAVE", 4, 1, foutput); // "WAVE"
 
 	fwrite("fmt ", 4, 1, foutput); // "fmt "
+	
 	dword=16;
 	fwrite(&dword, 1, 4, foutput); // chunk size
+	
 	word=1;
 	fwrite(&word, 1, 2, foutput); // compression code
+	
 	word=1;
 	fwrite(&word, 1, 2, foutput); // channels
+	
 	dword=wav_freq;
 	fwrite(&dword, 1, 4, foutput); // sample rate
+	
 	dword=wav_freq*wav_bits/8;
 	fwrite(&dword, 1, 4, foutput); // bytes/sec
+	
 	word=wav_bits/8;
 	fwrite(&word, 1, 2, foutput); // block align
+	
 	word=wav_bits;
 	fwrite(&word, 1, 2, foutput); // bits per sample
 
@@ -534,33 +648,350 @@ bool ExportWAV(char* filename)
 	return true;
 }
 
+void Randomize()
+{
+	p_base_freq=pow(frnd(2.0f)-1.0f, 2.0f);
+	if(rnd(1))
+		p_base_freq=pow(frnd(2.0f)-1.0f, 3.0f)+0.5f;
+	p_freq_limit=0.0f;
+	p_freq_ramp=pow(frnd(2.0f)-1.0f, 5.0f);
+	if(p_base_freq>0.7f && p_freq_ramp>0.2f)
+		p_freq_ramp=-p_freq_ramp;
+	if(p_base_freq<0.2f && p_freq_ramp<-0.05f)
+		p_freq_ramp=-p_freq_ramp;
+	p_freq_dramp=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_duty=frnd(2.0f)-1.0f;
+	p_duty_ramp=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_vib_strength=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_vib_speed=frnd(2.0f)-1.0f;
+	p_vib_delay=frnd(2.0f)-1.0f;
+	p_env_attack=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_env_sustain=pow(frnd(2.0f)-1.0f, 2.0f);
+	p_env_decay=frnd(2.0f)-1.0f;
+	p_env_punch=pow(frnd(0.8f), 2.0f);
+	if(p_env_attack+p_env_sustain+p_env_decay<0.2f)
+	{
+		p_env_sustain+=0.2f+frnd(0.3f);
+		p_env_decay+=0.2f+frnd(0.3f);
+	}
+	p_lpf_resonance=frnd(2.0f)-1.0f;
+	p_lpf_freq=1.0f-pow(frnd(1.0f), 3.0f);
+	p_lpf_ramp=pow(frnd(2.0f)-1.0f, 3.0f);
+	if(p_lpf_freq<0.1f && p_lpf_ramp<-0.05f)
+		p_lpf_ramp=-p_lpf_ramp;
+	p_hpf_freq=pow(frnd(1.0f), 5.0f);
+	p_hpf_ramp=pow(frnd(2.0f)-1.0f, 5.0f);
+	p_pha_offset=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_pha_ramp=pow(frnd(2.0f)-1.0f, 3.0f);
+	p_repeat_speed=frnd(2.0f)-1.0f;
+	p_arp_speed=frnd(2.0f)-1.0f;
+	p_arp_mod=frnd(2.0f)-1.0f;
+}
 
-bool firstframe=true;
-int refresh_counter=0;
+void Coin()
+{
+	ResetParams();
+	p_base_freq=0.4f+frnd(0.5f);
+	p_env_attack=0.0f;
+	p_env_sustain=frnd(0.1f);
+	p_env_decay=0.1f+frnd(0.4f);
+	p_env_punch=0.3f+frnd(0.3f);
+	if(rnd(1))
+	{
+		p_arp_speed=0.5f+frnd(0.2f);
+		p_arp_mod=0.2f+frnd(0.4f);
+	}
+}
+
+void Laser()
+{
+	ResetParams();
+	wave_type=rnd(2);
+	if(wave_type==2 && rnd(1))
+		wave_type=rnd(1);
+	p_base_freq=0.5f+frnd(0.5f);
+	p_freq_limit=p_base_freq-0.2f-frnd(0.6f);
+	if(p_freq_limit<0.2f) p_freq_limit=0.2f;
+	p_freq_ramp=-0.15f-frnd(0.2f);
+	if(rnd(2)==0)
+	{
+		p_base_freq=0.3f+frnd(0.6f);
+		p_freq_limit=frnd(0.1f);
+		p_freq_ramp=-0.35f-frnd(0.3f);
+	}
+	if(rnd(1))
+	{
+		p_duty=frnd(0.5f);
+		p_duty_ramp=frnd(0.2f);
+	}
+	else
+	{
+		p_duty=0.4f+frnd(0.5f);
+		p_duty_ramp=-frnd(0.7f);
+	}
+	p_env_attack=0.0f;
+	p_env_sustain=0.1f+frnd(0.2f);
+	p_env_decay=frnd(0.4f);
+	if(rnd(1))
+		p_env_punch=frnd(0.3f);
+	if(rnd(2)==0)
+	{
+		p_pha_offset=frnd(0.2f);
+		p_pha_ramp=-frnd(0.2f);
+	}
+	if(rnd(1))
+		p_hpf_freq=frnd(0.3f);
+}
+
+void Explosion()
+{
+	ResetParams();
+	wave_type=3;
+	if(rnd(1))
+	{
+		p_base_freq=0.1f+frnd(0.4f);
+		p_freq_ramp=-0.1f+frnd(0.4f);
+	}
+	else
+	{
+		p_base_freq=0.2f+frnd(0.7f);
+		p_freq_ramp=-0.2f-frnd(0.2f);
+	}
+	p_base_freq*=p_base_freq;
+	if(rnd(4)==0)
+		p_freq_ramp=0.0f;
+	if(rnd(2)==0)
+		p_repeat_speed=0.3f+frnd(0.5f);
+	p_env_attack=0.0f;
+	p_env_sustain=0.1f+frnd(0.3f);
+	p_env_decay=frnd(0.5f);
+	if(rnd(1)==0)
+	{
+		p_pha_offset=-0.3f+frnd(0.9f);
+		p_pha_ramp=-frnd(0.3f);
+	}
+	p_env_punch=0.2f+frnd(0.6f);
+	if(rnd(1))
+	{
+		p_vib_strength=frnd(0.7f);
+		p_vib_speed=frnd(0.6f);
+	}
+	if(rnd(2)==0)
+	{
+		p_arp_speed=0.6f+frnd(0.3f);
+		p_arp_mod=0.8f-frnd(1.6f);
+	}
+}
+
+void PowerUp()
+{
+	ResetParams();
+	if(rnd(1))
+		wave_type=1;
+	else
+		p_duty=frnd(0.6f);
+	if(rnd(1))
+	{
+		p_base_freq=0.2f+frnd(0.3f);
+		p_freq_ramp=0.1f+frnd(0.4f);
+		p_repeat_speed=0.4f+frnd(0.4f);
+	}
+	else
+	{
+		p_base_freq=0.2f+frnd(0.3f);
+		p_freq_ramp=0.05f+frnd(0.2f);
+		if(rnd(1))
+		{
+			p_vib_strength=frnd(0.7f);
+			p_vib_speed=frnd(0.6f);
+		}
+	}
+	p_env_attack=0.0f;
+	p_env_sustain=frnd(0.4f);
+	p_env_decay=0.1f+frnd(0.4f);
+}
+
+void Hit()
+{
+	ResetParams();
+	wave_type=rnd(2);
+	if(wave_type==2)
+		wave_type=3;
+	if(wave_type==0)
+		p_duty=frnd(0.6f);
+	p_base_freq=0.2f+frnd(0.6f);
+	p_freq_ramp=-0.3f-frnd(0.4f);
+	p_env_attack=0.0f;
+	p_env_sustain=frnd(0.1f);
+	p_env_decay=0.1f+frnd(0.2f);
+	if(rnd(1))
+		p_hpf_freq=frnd(0.3f);
+}
+
+void Blip()
+{
+	ResetParams();
+	wave_type=rnd(1);
+	if(wave_type==0)
+		p_duty=frnd(0.6f);
+	p_base_freq=0.2f+frnd(0.4f);
+	p_env_attack=0.0f;
+	p_env_sustain=0.1f+frnd(0.1f);
+	p_env_decay=frnd(0.2f);
+	p_hpf_freq=0.1f;
+}
+
+void Jump()
+{
+	ResetParams();
+	wave_type=0;
+	p_duty=frnd(0.6f);
+	p_base_freq=0.3f+frnd(0.3f);
+	p_freq_ramp=0.1f+frnd(0.2f);
+	p_env_attack=0.0f;
+	p_env_sustain=0.1f+frnd(0.3f);
+	p_env_decay=0.1f+frnd(0.2f);
+	if(rnd(1))
+		p_hpf_freq=frnd(0.3f);
+	if(rnd(1))
+		p_lpf_freq=1.0f-frnd(0.6f);
+}
+
+void Mutate()
+{
+	if(rnd(1)) p_base_freq+=frnd(0.1f)-0.05f;
+	//if(rnd(1)) p_freq_limit+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_freq_ramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_freq_dramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_duty+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_duty_ramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_vib_strength+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_vib_speed+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_vib_delay+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_env_attack+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_env_sustain+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_env_decay+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_env_punch+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_lpf_resonance+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_lpf_freq+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_lpf_ramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_hpf_freq+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_hpf_ramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_pha_offset+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_pha_ramp+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_repeat_speed+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_arp_speed+=frnd(0.1f)-0.05f;
+	if(rnd(1)) p_arp_mod+=frnd(0.1f)-0.05f;
+}
+
+void Usage()
+{
+	printf("\n    cfxr - utility to synthetize an 8bit game effect into a WAV file.\n");
+	printf("\n    USAGE: %s [ [coin|laser|explosion|powerup|hit|jump|blip|mutate] | -s <SFXR_PARAMETERS_FILE> | -h ] \n", EXECNAME );
+	printf("\n    EXAMPLES:\n");
+	printf("\n       cfxr -s fxparameters.sts \n");
+	printf("\n       # synthetize a sound effect based on the parameters loaded from fxparameters.sts settings file and ouput the sound to cfxr.wav file\n\n");
+	printf("\n       cfxr coin \n");
+	printf("\n       # synthetize a coin sound fx based on random parameters, save the parameters in cfxr.sts OVERWRITING it and ouput the sound to cfxr.wav file\n\n");
+}
+
+void Error()
+{
+	printf("\nERROR: Incorrect usage.\n");
+	Usage();
+	exit(1);
+}
 
 void main(int argc, char* argv[]){
 
-	if( argc < 2 ){
-		printf("\nERROR: missing argument with parameters file\n\n \tUSAGE: %s <SFXR_PARAMETERS_FILE>\n\n", argv[0]	);
-		exit(1);
+	srand(time(NULL));
+
+	if( argc > 3 ){
+		Error();
 	}
 
-	char *settings_filename = argv[1];
+	if( argc == 1 ){
+		Randomize();
+	} else {
+		char *option = argv[1];
+		char *optarg = argv[2];
+		switch(option[0])
+		{
+			case '-': 	
+				if(!strcmp(option,"-h")){
+					Usage();
+					exit(0);
+				} else if(!strcmp(option,"-s")){
+					settings_filename = optarg;
+					
+					if( argc == 3){
+						LoadSettings( settings_filename );
+					} else {
+						LoadSettings( DEFAULT_SETTINGS_FILENAME );
+					}	
+				} else {
+					Error();
+				}
+				break;
+			case 'c': // pickup/coin
+				if(strcmp(option,"coin")) Error();
+				Coin();
+				break;
+			case 'l': // laser/shoot
+				if(strcmp(option,"laser")) Error();
+				Laser();
+				break;
+			case 'e': // explosion
+				if(strcmp(option,"explosion")) Error();
+				Explosion();
+				break;
+			case 'p': // powerup
+				if(strcmp(option,"powerup")) Error();
+				PowerUp();
+				break;
+			case 'h': // hit/hurt
+				if(strcmp(option,"hit")) Error();
+				Hit();
+				break;
+			case 'j': // jump
+				if(strcmp(option,"jump")) Error();
+				Jump();
+				break;
+			case 'b': /// blip/select
+				if(strcmp(option,"blip")) Error();
+				Blip();
+				break;
+			case 'm': /// mutate
+				if(strcmp(option,"mutate")) Error();
+				Mutate();
+				break;
+			default:
+				Error();
+				break;
+		}
 
-
-	if( ! LoadSettings( settings_filename ) ){
-		printf("\nERROR: while loading parameters file %s\n\n", settings_filename );
-	}	
-
-	char output_filename[strlen(settings_filename)+4];
-	char *lastdotptr = strrchr( settings_filename, '.');
-	if( lastdotptr != NULL ){
-		lastdotptr[0] = 0  ;
 	}
-	sprintf( output_filename, "%s.wav",settings_filename);
-	printf("output_filename: %s\n", output_filename);
 
-    ExportWAV(output_filename);
+	char *outfile;
+
+	if( settings_loaded == true ){
+		char output_filename[strlen(settings_filename)+4];
+		char *lastdotptr = strrchr( settings_filename, '.');
+		if( lastdotptr != NULL ){
+			lastdotptr[0] = 0  ;
+		}
+		sprintf( output_filename, "%s.wav",settings_filename);
+		printf("output_filename: %s\n", output_filename);
+		outfile = output_filename;
+	} else {
+		outfile = DEFAULT_OUTPUT_FILENAME;
+		SaveSettings(DEFAULT_SETTINGS_FILENAME);
+	}
+	
+	ExportWAV(outfile);
+
+	PrintSettings();
+
 
 }
 
